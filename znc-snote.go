@@ -11,13 +11,13 @@ import (
 	"sync"
 	"text/template"
 
-	flag "github.com/ogier/pflag"
+	flag "github.com/spf13/pflag"
 )
 
 var snoteRe = regexp.MustCompile(`\[(?P<time>(?:\d{2}:?){3})\]\s-(?P<server_name>\S+)-\s\*{3}\s(?P<snote>(?:REMOTE)?\S+):\s(?P<text>.*)`)
 var Errorlogger = log.New(os.Stderr, "", 0)
 
-var snoteType string
+var snoteTypes []string
 var ignoreRemote bool
 var stripLeaders bool
 var includeFileName bool
@@ -33,7 +33,7 @@ var outChan = make(chan map[string]string)
 const indent = "            "
 
 func init() {
-	flag.StringVarP(&snoteType, "snote", "s", "*", "sets the snote to look for, * matches all")
+	flag.StringArrayVarP(&snoteTypes, "snote", "s", []string{"*"}, "sets the snote to look for, * matches all")
 	flag.BoolVarP(&ignoreRemote, "ignore-remote", "a", false, "Sets whether or not REMOTE snotes are ignored")
 	flag.BoolVar(&stripLeaders, "strip", false, "sets whether or not to strip the leading data from the snote")
 	flag.StringVarP(&fileOut, "output", "o", "-", "sets the file to output the data to, - outputs to stdout")
@@ -132,6 +132,29 @@ func reMatchToMap(re *regexp.Regexp, text string) map[string]string {
 	return res
 }
 
+var matchEverything bool
+
+const remote = "REMOTE"
+
+func shouldPrint(m map[string]string) bool {
+	if matchEverything {
+		return true
+	}
+	for _, v := range snoteTypes {
+		switch {
+		case v == "*":
+			matchEverything = true
+			fallthrough
+		case strings.EqualFold(m["snote"], v):
+			fallthrough
+		case !ignoreRemote && strings.EqualFold(m["snote"], remote+v):
+			return true
+		}
+	}
+
+	return false
+}
+
 func scan(path string, info os.FileInfo, err error) error {
 	if err != nil {
 		Errorlogger.Printf("could not read %s: %s", path, err)
@@ -158,19 +181,13 @@ func scan(path string, info os.FileInfo, err error) error {
 				continue
 			}
 			res := reMatchToMap(snoteRe, text)
-			if snoteType == "*" || strings.EqualFold(res["snote"], snoteType) || (!ignoreRemote && strings.EqualFold(res["snote"], "REMOTE"+snoteType)) {
-				toPrint := text
-				if stripLeaders {
-					toPrint = res["text"]
-				}
-				if includeFileName {
-					toPrint = path + ":" + toPrint
-				}
-				res["path"] = path
-				res["dir"], res["filename"] = filepath.Split(path)
-				res["line"] = text
-				outChan <- res
+			if !shouldPrint(res) {
+				continue
 			}
+			res["path"] = path
+			res["dir"], res["filename"] = filepath.Split(path)
+			res["line"] = text
+			outChan <- res
 
 		}
 	}()
